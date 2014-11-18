@@ -3,8 +3,23 @@ jsoniq version "1.0";
 module namespace d = "http://28.io/modules/documentdb";
 import module namespace hmac = "http://zorba.io/modules/hmac";
 import module namespace base64 = "http://zorba.io/modules/base64";
+import module namespace dateTime = "http://zorba.io/modules/datetime";
 
 import module namespace http-client = "http://zorba.io/modules/http-client";
+
+declare function d:now(
+)
+{
+    let $current := current-dateTime()
+    let $rounded := $current - dayTimeDuration("PT"||seconds-from-dateTime($current)||"S")
+    return format-dateTime(
+        adjust-dateTime-to-timezone(
+            $rounded,
+            xs:dayTimeDuration("PT0H")
+        ),
+        "[FNn,*-3], [D01] [MNn,*-3] [Y0001] [H01]:[m01]:[s01] GMT"
+    )
+};
 
 declare function d:create-client(
     $account,
@@ -28,13 +43,12 @@ declare function d:sign-request(
         ))
 };
 
-declare %an:sequential function d:list-databases( 
+declare %an:nondeterministic function d:list-databases( 
     $client as object
 ) as object 
 {
-let $now := format-dateTime(adjust-dateTime-to-timezone(current-dateTime(), xs:dayTimeDuration("PT0H")), "[FNn,*-3], [D01] [MNn,*-3] [Y0001] [H01]:[m01]:[s01] GMT")
-return
-parse-json(http-client:send-request(
+let $now := d:now()
+let $response := http-client:send-nondeterministic-request(
     { href: $client.Host || "/dbs",
       headers: {
           "Authorization" :
@@ -48,5 +62,78 @@ parse-json(http-client:send-request(
           x-ms-date: $now,
           Date: $now,
           Accept: "application/json" }
-    }).body.content)
+    })
+let $body := parse-json($response.body.content)
+return if($response.status eq 200) then $body else error(QName("d:ERR0001"), $body.message)
 };
+
+declare %an:nondeterministic function d:get-database( 
+    $client as object,
+    $dbid as string
+) as object?
+{
+    d:list-databases($client).Databases[][$$.id eq $dbid]
+};
+
+declare %an:nondeterministic function d:list-collections( 
+    $client as object,
+    $database as string
+) as object 
+{
+let $now := d:now()
+let $db-object := d:get-database($client, $database)
+let $response := http-client:send-nondeterministic-request(
+    { href: $client.Host || "/" || $db-object._self || $db-object._colls,
+      headers: {
+          "Authorization" :
+            d:sign-request(
+              "get",
+              "colls",
+              $db-object._rid,
+              $now,
+              "",
+              $client.MasterKey),
+          x-ms-date: $now,
+          Date: $now,
+          Accept: "application/json" }
+    })
+let $body := parse-json($response.body.content)
+return if($response.status eq 200) then $body else error(QName("d:ERR0001"), $body.message)
+};
+
+declare %an:nondeterministic function d:get-collection( 
+    $client as object,
+    $dbid as string,
+    $collid as string
+) as object?
+{
+    d:list-collections($client, $dbid).DocumentCollections[][$$.id eq $collid]
+};
+
+declare %an:nondeterministic function d:collection( 
+    $client as object,
+    $dbid as string,
+    $collid as string
+) as object*
+{
+let $now := d:now()
+let $collobject := d:list-collections($client, $dbid).DocumentCollections[][$$.id eq $collid]
+let $response := http-client:send-nondeterministic-request(
+    { href: $client.Host || "/" || $collobject._self || $collobject._docs,
+      headers: {
+          "Authorization" :
+            d:sign-request(
+              "get",
+              "docs",
+              $collobject._rid,
+              $now,
+              "",
+              $client.MasterKey),
+          x-ms-date: $now,
+          Date: $now,
+          Accept: "application/json" }
+    })
+let $body as object* := parse-json($response.body.content).Documents[]
+return if($response.status eq 200) then $body else error(QName("d:ERR0001"), $body.message)
+};
+
