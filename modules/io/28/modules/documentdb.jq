@@ -7,11 +7,11 @@ import module namespace dateTime = "http://zorba.io/modules/datetime";
 
 import module namespace http-client = "http://zorba.io/modules/http-client";
 
-declare function d:now(
+declare %an:nondeterministic function d:now(
 )
 {
-    let $current := current-dateTime()
-    let $rounded := $current - dayTimeDuration("PT"||seconds-from-dateTime($current)||"S")
+    let $current := dateTime:current-dateTime()
+    let $rounded := $current
     return format-dateTime(
         adjust-dateTime-to-timezone(
             $rounded,
@@ -48,7 +48,7 @@ declare %an:nondeterministic function d:list-databases(
 ) as object 
 {
 let $now := d:now()
-let $response := http-client:send-nondeterministic-request(
+let $request :=
     { href: $client.Host || "/dbs",
       headers: {
           "Authorization" :
@@ -62,10 +62,42 @@ let $response := http-client:send-nondeterministic-request(
           x-ms-date: $now,
           Date: $now,
           Accept: "application/json" }
-    })
+    }
+let $response := http-client:send-nondeterministic-request($request)
 let $body := parse-json($response.body.content)
-return if($response.status eq 200) then $body else error(QName("d:ERR0001"), $body.message)
+return if($response.status eq 200) then $body else d:list-databases($client, 10)
 };
+
+
+declare %an:nondeterministic function d:list-databases( 
+    $client as object,
+    $retries as integer
+) as object 
+{
+let $now := d:now()
+let $request :=
+    { href: $client.Host || "/dbs",
+      headers: {
+          "Authorization" :
+            d:sign-request(
+              "get",
+              "dbs",
+              "",
+              $now,
+              "",
+              $client.MasterKey),
+          x-ms-date: $now,
+          Date: $now,
+          Accept: "application/json" }
+    }
+let $response := http-client:send-nondeterministic-request($request)
+let $body := parse-json($response.body.content)
+return if($response.status eq 200) then $body else
+    if($retries gt 0)
+    then d:list-databases($client, $retries - 1)
+    else error(QName("d:ERR0001"), $body.message, $request)
+};
+
 
 declare %an:nondeterministic function d:get-database( 
     $client as object,
@@ -82,8 +114,7 @@ declare %an:nondeterministic function d:list-collections(
 {
 let $now := d:now()
 let $db-object := d:get-database($client, $database)
-let $response := http-client:send-nondeterministic-request(
-    { href: $client.Host || "/" || $db-object._self || $db-object._colls,
+let $request := { href: $client.Host || "/" || $db-object._self || $db-object._colls,
       headers: {
           "Authorization" :
             d:sign-request(
@@ -96,9 +127,40 @@ let $response := http-client:send-nondeterministic-request(
           x-ms-date: $now,
           Date: $now,
           Accept: "application/json" }
-    })
+    }
+let $response := http-client:send-nondeterministic-request($request)
 let $body := parse-json($response.body.content)
-return if($response.status eq 200) then $body else error(QName("d:ERR0001"), $body.message)
+return if($response.status eq 200) then $body else d:list-collections($client, $database, 10)
+};
+
+declare %an:nondeterministic function d:list-collections( 
+    $client as object,
+    $database as string,
+    $retries as integer
+) as object 
+{
+let $now := d:now()
+let $db-object := d:get-database($client, $database)
+let $request := { href: $client.Host || "/" || $db-object._self || $db-object._colls,
+      headers: {
+          "Authorization" :
+            d:sign-request(
+              "get",
+              "colls",
+              $db-object._rid,
+              $now,
+              "",
+              $client.MasterKey),
+          x-ms-date: $now,
+          Date: $now,
+          Accept: "application/json" }
+    }
+let $response := http-client:send-nondeterministic-request($request)
+let $body := parse-json($response.body.content)
+return if($response.status eq 200) then $body else
+    if($retries gt 0)
+    then d:list-collections($client, $database, $retries - 1)
+    else error(QName("d:ERR0001"), $body.message, $request)
 };
 
 declare %an:nondeterministic function d:get-collection( 
@@ -118,7 +180,7 @@ declare %an:nondeterministic function d:collection(
 {
 let $now := d:now()
 let $collobject := d:list-collections($client, $dbid).DocumentCollections[][$$.id eq $collid]
-let $response := http-client:send-nondeterministic-request(
+let $request := 
     { href: $client.Host || "/" || $collobject._self || $collobject._docs,
       headers: {
           "Authorization" :
@@ -132,8 +194,41 @@ let $response := http-client:send-nondeterministic-request(
           x-ms-date: $now,
           Date: $now,
           Accept: "application/json" }
-    })
+    }
+let $response := http-client:send-nondeterministic-request($request)
 let $body as object* := parse-json($response.body.content).Documents[]
-return if($response.status eq 200) then $body else error(QName("d:ERR0001"), $body.message)
+return if($response.status eq 200) then $body else d:collection($client, $dbid, $collid, 10)
+};
+
+declare %an:nondeterministic function d:collection( 
+    $client as object,
+    $dbid as string,
+    $collid as string,
+    $retries as integer
+) as object*
+{
+let $now := d:now()
+let $collobject := d:list-collections($client, $dbid).DocumentCollections[][$$.id eq $collid]
+let $request := 
+    { href: $client.Host || "/" || $collobject._self || $collobject._docs,
+      headers: {
+          "Authorization" :
+            d:sign-request(
+              "get",
+              "docs",
+              $collobject._rid,
+              $now,
+              "",
+              $client.MasterKey),
+          x-ms-date: $now,
+          Date: $now,
+          Accept: "application/json" }
+    }
+let $response := http-client:send-nondeterministic-request($request)
+let $body as object* := parse-json($response.body.content).Documents[]
+return if($response.status eq 200) then $body else
+    if($retries gt 0)
+    then d:collection($client, $dbid, $collid, $retries -1 )
+    else error(QName("d:ERR0001"), $body.message, $request)
 };
 
