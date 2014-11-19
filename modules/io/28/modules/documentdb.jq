@@ -231,4 +231,3 @@ return if($response.status eq 200) then $body else
     then d:collection($client, $dbid, $collid, $retries -1 )
     else error(QName("d:ERR0001"), $body.message, $request)
 };
-
